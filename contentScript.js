@@ -148,13 +148,13 @@ function markDangerousLink(element, analysis, url) {
     e.stopPropagation();
     
     try {
-      const warningUrl = chrome.runtime.getURL('warningDialog.html') +
-        `?url=${encodeURIComponent(url)}&analysis=${encodeURIComponent(JSON.stringify(analysis))}`;
+      const warningUrl = chrome.runtime.getURL('warningDialog.html');
       
       await chrome.runtime.sendMessage({
         action: 'openWarningDialog',
-        warningUrl,
-        originalUrl: url
+        warningUrl: warningUrl,
+        originalUrl: url,
+        analysis: analysis
       });
     } catch (error) {
       console.error('Error showing warning:', error);
@@ -196,3 +196,52 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Initial check when script is loaded
 checkForSuspiciousContent();
 findAndProcessLinks();
+
+function createFloatingButton() {
+  const button = document.createElement('div');
+  button.className = 'phishguard-float-button';
+  button.innerHTML = `
+    <button class="phishguard-report-btn">
+      🚫 Report Phishing
+    </button>
+  `;
+  
+  button.addEventListener('click', async () => {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'reportPhish',
+        url: window.location.href,
+        details: {
+          source: 'floating-button',
+          timestamp: new Date().toISOString()
+        }
+      });
+
+      if (response.success) {
+        button.innerHTML = '<div class="phishguard-success">✓ Reported</div>';
+        setTimeout(() => button.remove(), 3000);
+      }
+    } catch (error) {
+      console.error('Failed to report:', error);
+    }
+  });
+
+  document.body.appendChild(button);
+}
+
+// Show floating button on suspicious pages
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'showReportButton') {
+    createFloatingButton();
+  }
+});
+
+// Check current page on load
+chrome.runtime.sendMessage({ 
+  action: 'checkUrl', 
+  url: window.location.href 
+}, response => {
+  if (response && !response.safe) {
+    createFloatingButton();
+  }
+});

@@ -4,6 +4,8 @@ class PhishGuardUI {
     this.analysisResult = null;
     this.retryCount = 0;
     this.maxRetries = 3;
+    this.updateInterval = null;
+    this.lastAnalysis = null;
   }
 
   async init() {
@@ -11,8 +13,9 @@ class PhishGuardUI {
       await this.getCurrentTab();
       this.setupEventListeners();
       await this.startAnalysis();
+      this.setupAutoUpdate();
     } catch (error) {
-      this.showError('Failed to initialize: ' + error.message);
+      this.handleError(error);
     }
   }
 
@@ -41,22 +44,37 @@ class PhishGuardUI {
     document.getElementById('detailedReport').addEventListener('click', () => {
       this.showDetailedReport();
     });
+
+    // Add report phishing button handler
+    document.getElementById('reportPhishingBtn').addEventListener('click', () => {
+      this.reportPhishing();
+    });
   }
 
-  async startAnalysis() {
-    try {
+  setupAutoUpdate() {
+    // Update analysis every 5 minutes
+    this.updateInterval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        this.startAnalysis(true);
+      }
+    }, 5 * 60 * 1000);
+  }
+
+  async startAnalysis(silent = false) {
+    if (!silent) {
       this.showLoadingState();
+    }
+
+    try {
       const analysis = await this.performAnalysis();
       if (!analysis) throw new Error('Analysis failed');
-      this.updateUI(analysis);
+
+      // Compare with last analysis
+      const changes = this.compareAnalysis(analysis);
+      this.updateUI(analysis, changes);
+      this.lastAnalysis = analysis;
     } catch (error) {
-      if (this.retryCount < this.maxRetries) {
-        this.retryCount++;
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        await this.startAnalysis();
-      } else {
-        this.showError(error.message);
-      }
+      await this.handleAnalysisError(error);
     }
   }
 
@@ -73,6 +91,34 @@ class PhishGuardUI {
         }
       });
     });
+  }
+
+  compareAnalysis(newAnalysis) {
+    if (!this.lastAnalysis) return null;
+
+    return {
+      riskScoreChanged: newAnalysis.urlDetails.riskScore !== this.lastAnalysis.urlDetails.riskScore,
+      newFlags: newAnalysis.urlDetails.flags.filter(flag => 
+        !this.lastAnalysis.urlDetails.flags.includes(flag)
+      ),
+      removedFlags: this.lastAnalysis.urlDetails.flags.filter(flag => 
+        !newAnalysis.urlDetails.flags.includes(flag)
+      )
+    };
+  }
+
+  handleError(error) {
+    console.error('PhishGuard Error:', error);
+    this.showError(`${error.message}\nPlease try again or contact support if the problem persists.`);
+  }
+
+  async handleAnalysisError(error) {
+    if (this.retryCount < this.maxRetries) {
+      this.retryCount++;
+      await new Promise(resolve => setTimeout(resolve, 1000 * this.retryCount));
+      return this.startAnalysis();
+    }
+    this.handleError(error);
   }
 
   updateUrlDisplay() {
@@ -98,7 +144,7 @@ class PhishGuardUI {
     errorDiv.style.display = 'block';
   }
 
-  updateUI(analysis) {
+  updateUI(analysis, changes = null) {
     try {
       document.getElementById('analysisStatus').style.display = 'none';
       document.getElementById('resultsContainer').style.display = 'block';
@@ -110,8 +156,43 @@ class PhishGuardUI {
       this.updateAIAnalysis(analysis);
       
       document.getElementById('lastUpdated').textContent = new Date().toLocaleTimeString();
+
+      // Show changes if any
+      if (changes && (changes.newFlags.length > 0 || changes.removedFlags.length > 0)) {
+        this.showChangesNotification(changes);
+      }
+
+      // Add reported status if URL was reported
+      chrome.storage.local.get('phishingReports', (data) => {
+        const reports = data.phishingReports || [];
+        const reported = reports.some(report => report.url === this.currentUrl);
+        if (reported) {
+          const reportBadge = document.createElement('div');
+          reportBadge.className = 'report-badge';
+          reportBadge.textContent = '⚠️ Reported as Phishing';
+          document.getElementById('resultsContainer').prepend(reportBadge);
+        }
+      });
+
+      // Update report button state if URL was already reported
+      chrome.storage.local.get('phishingReports', (data) => {
+        const reports = data.phishingReports || [];
+        const reported = reports.some(report => report.url === this.currentUrl);
+        
+        const reportBtn = document.getElementById('reportPhishingBtn');
+        if (reported) {
+          reportBtn.textContent = '✓ Reported as Phishing';
+          reportBtn.disabled = true;
+          reportBtn.style.background = '#6c757d';
+        } else {
+          reportBtn.textContent = '🚫 Report Phishing Website';
+          reportBtn.disabled = false;
+          reportBtn.style.background = '';
+        }
+      });
+
     } catch (error) {
-      this.showError('UI update failed: ' + error.message);
+      this.handleError(error);
     }
   }
 
@@ -386,6 +467,74 @@ class PhishGuardUI {
     document.querySelectorAll('.tab-pane').forEach(pane => {
       pane.classList.toggle('active', pane.id === `${tabId}Tab`);
     });
+  }
+
+  showChangesNotification(changes) {
+    const notification = document.createElement('div');
+    notification.className = 'changes-notification';
+    notification.innerHTML = `
+      ${changes.newFlags.length > 0 ? `
+        <div class="new-flags">
+          <h4>New Risk Factors:</h4>
+          <ul>${changes.newFlags.map(flag => `<li>${flag}</li>`).join('')}</ul>
+        </div>
+      ` : ''}
+      ${changes.removedFlags.length > 0 ? `
+        <div class="removed-flags">
+          <h4>Resolved Issues:</h4>
+          <ul>${changes.removedFlags.map(flag => `<li>${flag}</li>`).join('')}</ul>
+        </div>
+      ` : ''}
+    `;
+    
+    document.getElementById('resultsContainer').prepend(notification);
+    
+    // Auto-remove notification after 5 seconds
+    setTimeout(() => {
+      notification.remove();
+    }, 5000);
+  }
+
+  async reportPhishing() {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'reportPhish',
+        url: this.currentUrl,
+        details: {
+          riskScore: this.analysisResult?.urlDetails?.riskScore || 100,
+          threatLevel: this.analysisResult?.urlDetails?.threatLevel || 'Reported',
+          reportedFlags: this.analysisResult?.urlDetails?.flags || ['User-reported phishing site']
+        }
+      });
+
+      if (response.success) {
+        // Update UI to show reported status
+        const reportBtn = document.getElementById('reportPhishingBtn');
+        reportBtn.textContent = '✓ Reported as Phishing';
+        reportBtn.disabled = true;
+        reportBtn.style.background = '#6c757d';
+        
+        // Show confirmation message
+        this.showNotification('Thank you for reporting! This helps protect other users.', 'success');
+        
+        // Refresh analysis after short delay
+        setTimeout(() => this.startAnalysis(), 1500);
+      } else {
+        throw new Error(response.message);
+      }
+    } catch (error) {
+      this.showNotification('Failed to submit report. Please try again.', 'error');
+      console.error('Report submission failed:', error);
+    }
+  }
+
+  showNotification(message, type = 'info') {
+    const notification = document.createElement('div');
+    notification.className = `notification ${type}`;
+    notification.textContent = message;
+    document.querySelector('.container').prepend(notification);
+    
+    setTimeout(() => notification.remove(), 5000);
   }
 }
 

@@ -41,17 +41,50 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'openWarningDialog') {
+    // Create popup window with centered position
+    const width = 500;
+    const height = 600;
+    const left = Math.round((screen.width - width) / 2);
+    const top = Math.round((screen.height - height) / 2);
+
     chrome.windows.create({
       url: request.warningUrl,
       type: 'popup',
-      width: 500,
-      height: 600,
-      left: screen.width/2 - 250,
-      top: screen.height/2 - 300
+      width: width,
+      height: height,
+      left: left,
+      top: top,
+      focused: true
+    }).then(window => {
+      // Store the target URL for this warning window
+      chrome.storage.local.set({
+        [`warning_${window.id}`]: {
+          targetUrl: request.originalUrl,
+          analysis: request.analysis
+        }
+      });
+      sendResponse({ success: true });
     }).catch(error => {
       console.error('Failed to open warning dialog:', error);
       sendResponse({ error: error.message });
     });
+    return true;
+  }
+
+  if (request.action === 'proceedToUrl') {
+    chrome.tabs.create({ url: request.url }, () => {
+      // Close the warning window after proceeding
+      if (sender.tab) {
+        chrome.windows.remove(sender.tab.windowId);
+      }
+    });
+    return true;
+  }
+
+  if (request.action === 'reportPhish') {
+    handlePhishReport(request.url, request.details)
+      .then(response => sendResponse({ success: true, message: 'Report submitted successfully' }))
+      .catch(error => sendResponse({ success: false, message: error.message }));
     return true;
   }
 });
@@ -65,12 +98,55 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // ...existing message handlers...
 });
 
+// Add new cache system
+const urlCache = new Map();
+const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+
+// Add rate limiting
+const rateLimiter = {
+  requests: new Map(),
+  limit: 100,
+  interval: 60 * 1000, // 1 minute
+  checkLimit(key) {
+    const now = Date.now();
+    const requests = this.requests.get(key) || [];
+    const validRequests = requests.filter(time => time > now - this.interval);
+    this.requests.set(key, validRequests);
+    return validRequests.length < this.limit;
+  },
+  addRequest(key) {
+    const requests = this.requests.get(key) || [];
+    requests.push(Date.now());
+    this.requests.set(key, requests);
+  }
+};
+
+// Improve URL check with caching
 async function handleUrlCheck(url) {
   try {
     const startTime = Date.now();
-    const result = await checkUrl(url);
-    const endTime = Date.now();
 
+    // Check cache first
+    const cached = urlCache.get(url);
+    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+      return cached.result;
+    }
+
+    // Check rate limit
+    if (!rateLimiter.checkLimit(url)) {
+      throw new Error('Rate limit exceeded');
+    }
+    rateLimiter.addRequest(url);
+
+    const result = await checkUrl(url);
+    
+    // Cache the result
+    urlCache.set(url, {
+      timestamp: Date.now(),
+      result
+    });
+
+    const endTime = Date.now();
     console.log(`URL check completed in ${endTime - startTime}ms:`, {
       url,
       result
@@ -483,40 +559,63 @@ async function analyzeUrlContent(url) {
   }
 }
 
+// Improve scoring algorithm
 function calculateWeightedScore(scores) {
-  // Enhanced weighting system with confidence adjustments
+  // Dynamic weight adjustment based on confidence levels
   const weights = {
-    safeBrowsing: 0.35,  // Increased weight for Google Safe Browsing
-    gemini: 0.15,        // Adjusted based on AI confidence
-    domain: 0.25,        // Increased domain importance
-    ml: 0.15,           // Machine learning model
-    content: 0.10        // Content analysis
+    safeBrowsing: 0.35,
+    gemini: 0.15,
+    domain: 0.25,
+    ml: 0.15,
+    content: 0.10
   };
 
-  // Adjust weights based on confidence levels
-  if (scores.safeBrowsing > 80) {
-    weights.safeBrowsing += 0.1;
-    weights.gemini -= 0.05;
-    weights.ml -= 0.05;
-  }
+  // Adjust weights based on confidence and reliability
+  const adjustWeights = (scores) => {
+    if (scores.safeBrowsing > 80) {
+      weights.safeBrowsing += 0.15;
+      weights.gemini -= 0.05;
+      weights.ml -= 0.05;
+      weights.content -= 0.05;
+    }
 
-  if (scores.ml > 90) {
-    weights.ml += 0.1;
-    weights.gemini -= 0.05;
-    weights.content -= 0.05;
-  }
+    if (scores.ml > 90) {
+      weights.ml += 0.10;
+      weights.gemini -= 0.05;
+      weights.content -= 0.05;
+    }
 
-  // Normalize weights
-  const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
-  Object.keys(weights).forEach(key => {
-    weights[key] = weights[key] / totalWeight;
-  });
+    // Normalize weights
+    const total = Object.values(weights).reduce((a, b) => a + b, 0);
+    Object.keys(weights).forEach(key => {
+      weights[key] = weights[key] / total;
+    });
+  };
 
+  adjustWeights(scores);
+
+  // Calculate final score with confidence adjustment
   return Math.round(
     Object.entries(scores).reduce((total, [key, score]) => {
-      return total + (score * weights[key]);
+      const confidence = getConfidenceLevel(key, score);
+      return total + (score * weights[key] * confidence);
     }, 0)
   );
+}
+
+function getConfidenceLevel(source, score) {
+  const confidenceLevels = {
+    safeBrowsing: 0.95,
+    ml: 0.85,
+    domain: 0.90,
+    gemini: 0.80,
+    content: 0.75
+  };
+
+  // Adjust confidence based on score extremity
+  const baseConfidence = confidenceLevels[source];
+  const scoreExtremity = Math.abs(50 - score) / 50; // 0 to 1
+  return baseConfidence * (1 + scoreExtremity * 0.2); // Up to 20% boost
 }
 
 function generateDetailedMessage(isSafe, scores) {
@@ -667,6 +766,33 @@ function calculateConfidenceScore(scores, safeBrowsingResult, mlAnalysis) {
       return total + (confidenceFactors[key] * weight);
     }, 0)
   );
+}
+
+async function handlePhishReport(url, details) {
+  try {
+    // Store report in local storage for persistence
+    const reports = await chrome.storage.local.get('phishingReports') || { phishingReports: [] };
+    reports.phishingReports.push({
+      url,
+      details,
+      timestamp: new Date().toISOString(),
+      status: 'pending'
+    });
+    await chrome.storage.local.set(reports);
+
+    // Update URL check cache to reflect the report
+    const cached = urlCache.get(url);
+    if (cached) {
+      cached.result.urlDetails.riskScore += 10; // Increase risk score
+      cached.result.urlDetails.flags.push('Reported as phishing by users');
+      urlCache.set(url, cached);
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Failed to submit phishing report:', error);
+    throw new Error('Failed to submit report');
+  }
 }
 
 // ... rest of your existing helper functions ...

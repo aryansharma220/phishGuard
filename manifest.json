@@ -12,19 +12,13 @@
     "declarativeContent"
   ],
   "host_permissions": [
-    "https://safebrowsing.googleapis.com/*",
-    "https://generativelanguage.googleapis.com/*",
-    "https://api.phishtank.com/*",
-    "https://api.huggingface.co/*",
-    "https://api.unshorten.it/*",
-    "https://whois.whoisxmlapi.com/*",
     "*://*/*"
   ],
   "web_accessible_resources": [{
     "resources": [
-      ".env",
       "warningDialog.html",
-      "warningDialog.js"
+      "warningDialog.js",
+      "warningDialog.css"
     ],
     "matches": ["<all_urls>"]
   }],
@@ -43,8 +37,7 @@
     }
   },
   "background": {
-    "service_worker": "background.js",
-    "type": "module"
+    "service_worker": "background.js"
   },
   "icons": {
     "16": "icon.png",
