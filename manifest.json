@@ -16,6 +16,7 @@
     "https://api.phishtank.com/*",
     "https://api.huggingface.co/*",
     "https://api.unshorten.it/*",
+    "https://whois.whoisxmlapi.com/*",
     "*://*/*"
   ],
   "web_accessible_resources": [{

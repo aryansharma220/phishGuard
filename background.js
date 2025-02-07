@@ -221,14 +221,18 @@ function generateFlags(safeBrowsing, gemini, domain, riskScore) {
 async function analyzeDomain(urlInfo) {
   try {
     const domain = urlInfo.hostname;
-    const age = '5 years+'; // Simplified for now
-    const ssl = urlInfo.protocol === 'https:' ? 'Valid SSL' : 'No SSL';
+    const whoisData = await fetchWhoisData(domain);
     
-    // Basic domain analysis
     const analysis = {
-      age: age,
-      ssl: ssl,
+      age: calculateDomainAge(whoisData.created_date),
+      ssl: urlInfo.protocol === 'https:' ? 'Valid SSL' : 'No SSL',
       isSecure: urlInfo.protocol === 'https:',
+      registrar: whoisData.registrar || 'Unknown',
+      createdDate: whoisData.created_date || 'Unknown',
+      expiryDate: whoisData.expiry_date || 'Unknown',
+      updatedDate: whoisData.updated_date || 'Unknown',
+      nameServers: whoisData.name_servers || [],
+      registrantCountry: whoisData.registrant_country || 'Unknown',
       suspiciousPatterns: checkSuspiciousPatterns(domain),
       hasNumbers: /\d/.test(domain),
       specialChars: (domain.match(/[^a-zA-Z0-9.-]/g) || []).length,
@@ -253,23 +257,49 @@ async function analyzeDomain(urlInfo) {
   }
 }
 
-function checkSuspiciousPatterns(domain) {
-  const patterns = [
-    { pattern: /^[0-9]+/, type: 'Numeric prefix' },
-    { pattern: /[-_.]{2,}/, type: 'Multiple separators' },
-    { pattern: /(login|verify|account|secure|banking)\.(tk|ml|ga|cf|gq)$/, type: 'Suspicious TLD' },
-    { pattern: /paypal|apple|google|microsoft|amazon/i, type: 'Brand impersonation' }
-  ];
-
-  return patterns
-    .filter(({ pattern }) => pattern.test(domain))
-    .map(({ type }) => type);
+async function fetchWhoisData(domain) {
+  try {
+    const response = await fetch(`https://whois.whoisxmlapi.com/api/v1?apiKey=${ENV_VARS.WHOIS_API_KEY}&domainName=${domain}`);
+    if (!response.ok) {
+      throw new Error('WHOIS API request failed');
+    }
+    const data = await response.json();
+    return {
+      created_date: data.WhoisRecord?.createdDate,
+      expiry_date: data.WhoisRecord?.expiryDate,
+      updated_date: data.WhoisRecord?.updatedDate,
+      registrar: data.WhoisRecord?.registrar?.name,
+      name_servers: data.WhoisRecord?.nameServers?.hostNames || [],
+      registrant_country: data.WhoisRecord?.registrant?.country,
+    };
+  } catch (error) {
+    console.error('WHOIS API error:', error);
+    return {};
+  }
 }
 
-function calculateRiskScore(urlInfo, domainInfo) {
+function calculateDomainAge(createdDate) {
+  if (!createdDate) return 'Unknown';
+  
+  try {
+    const created = new Date(createdDate);
+    const now = new Date();
+    const ageInDays = Math.floor((now - created) / (1000 * 60 * 60 * 24));
+    
+    if (ageInDays < 7) return '1 week';
+    if (ageInDays < 30) return '1 month';
+    if (ageInDays < 180) return '6 months';
+    if (ageInDays < 365) return '1 year';
+    return '5 years+';
+  } catch {
+    return 'Unknown';
+  }
+}
+
+function calculateDomainScore(domainInfo) {
   let score = 0;
   
-  // Domain age scoring
+  // Enhanced domain age scoring with WHOIS data
   const ageScores = {
     '1 week': 50,
     '1 month': 40,
@@ -280,30 +310,37 @@ function calculateRiskScore(urlInfo, domainInfo) {
   };
   score += ageScores[domainInfo.age] || 35;
 
-  // SSL scoring
-  if (!domainInfo.isSecure) score += 30;
+  // Additional WHOIS-based scoring
+  if (domainInfo.details) {
+    // Registrar check
+    if (!domainInfo.details.registrar) score += 15;
+    
+    // Name servers check
+    if (!domainInfo.details.nameServers?.length) score += 10;
+    
+    // Registration country check (high-risk countries list should be maintained)
+    const highRiskCountries = ['', 'Unknown', null];
+    if (highRiskCountries.includes(domainInfo.details.registrantCountry)) {
+      score += 20;
+    }
 
-  // Suspicious patterns scoring
-  if (domainInfo.details.suspiciousPatterns) {
-    score += domainInfo.details.suspiciousPatterns.length * 15;
+    // Existing checks
+    if (!domainInfo.isSecure) score += 30;
+    if (domainInfo.details.suspiciousPatterns?.length) {
+      score += domainInfo.details.suspiciousPatterns.length * 15;
+    }
+    if (domainInfo.details.hasNumbers) score += 10;
+    score += (domainInfo.details.specialChars || 0) * 5;
+    if (domainInfo.details.length > 30) score += 10;
+    if (domainInfo.details.subdomains > 3) score += 15;
   }
 
-  // Special characters and numbers
-  if (domainInfo.details.hasNumbers) score += 10;
-  score += domainInfo.details.specialChars * 5;
-
-  // Excessive length
-  if (domainInfo.details.length > 30) score += 10;
-
-  // Too many subdomains
-  if (domainInfo.details.subdomains > 3) score += 15;
-
-  return Math.min(Math.round(score), 100);
+  return Math.min(score, 100);
 }
 
 async function checkWithHuggingFace(url) {
   try {
-    const response = await fetch('https://api-inference.huggingface.co/models/deepset/phishing_url_detector', {
+    const response = await fetch('https://api-inference.huggingface.co/models/ealvaradob/bert-finetuned-phishing', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${ENV_VARS.HUGGING_FACE_API_KEY}`,
@@ -401,42 +438,6 @@ function calculateGeminiScore(geminiResult) {
   
   // Calculate risk score inversely proportional to confidence
   return geminiResult.safe ? 0 : (100 - confidenceScore);
-}
-
-function calculateDomainScore(domainInfo) {
-  let score = 0;
-  
-  // Domain age risk
-  const ageScores = {
-    '1 week': 50,
-    '1 month': 40,
-    '6 months': 20,
-    '1 year': 10,
-    '5 years+': 0,
-    'Unknown': 35
-  };
-  score += ageScores[domainInfo.age] || 35;
-
-  // SSL check
-  if (!domainInfo.isSecure) score += 30;
-
-  // Domain analysis
-  if (domainInfo.details) {
-    // Suspicious patterns
-    if (domainInfo.details.suspiciousPatterns) {
-      score += domainInfo.details.suspiciousPatterns.length * 15;
-    }
-    // Numbers in domain
-    if (domainInfo.details.hasNumbers) score += 10;
-    // Special characters
-    score += (domainInfo.details.specialChars || 0) * 5;
-    // Length penalty
-    if (domainInfo.details.length > 30) score += 10;
-    // Subdomain count
-    if (domainInfo.details.subdomains > 3) score += 15;
-  }
-
-  return Math.min(score, 100);
 }
 
 function generateTechnicalReport(scores, contentAnalysis) {
