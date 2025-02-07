@@ -1,0 +1,42 @@
+.phishguard-warning {
+  position: relative !important;
+  border-bottom: 2px dashed #ff4444 !important;
+  cursor: help !important;
+}
+
+.phishguard-tooltip {
+  position: absolute !important;
+  bottom: 100% !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  background: #fff !important;
+  border: 1px solid #ddd !important;
+  padding: 8px !important;
+  border-radius: 4px !important;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2) !important;
+  z-index: 2147483647 !important;
+  max-width: 250px !important;
+  font-size: 12px !important;
+  color: #333 !important;
+  margin-bottom: 5px !important;
+  white-space: normal !important;
+  text-align: left !important;
+  display: none !important;
+  pointer-events: none !important;
+}
+
+.phishguard-warning:hover .phishguard-tooltip {
+  display: block !important;
+}
+
+.phishguard-risk-high {
+  background-color: #ffebee !important;
+}
+
+.phishguard-risk-medium {
+  background-color: #fff3e0 !important;
+}
+
+.phishguard-risk-low {
+  background-color: #f1f8e9 !important;
+}

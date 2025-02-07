@@ -8,7 +8,8 @@
     "storage",
     "tabs",
     "webNavigation",
-    "scripting"
+    "scripting",
+    "declarativeContent"
   ],
   "host_permissions": [
     "https://safebrowsing.googleapis.com/*",
@@ -25,7 +26,9 @@
   }],
   "content_scripts": [{
     "matches": ["<all_urls>"],
-    "js": ["contentScript.js"]
+    "js": ["contentScript.js"],
+    "css": ["contentScript.css"],
+    "run_at": "document_end"
   }],
   "action": {
     "default_popup": "popup.html",
