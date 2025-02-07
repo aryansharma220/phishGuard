@@ -45,11 +45,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
+// Add message handler for proceeding to URL
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'proceedToUrl') {
+    chrome.tabs.create({ url: request.url });
+    return true;
+  }
+  // ...existing message handlers...
+});
+
 async function checkUrl(url) {
   try {
     const urlInfo = new URL(url);
     
-    // Enhanced parallel checks
+    // Enhanced parallel checks with confidence scores
     const [safeBrowsingResult, geminiResult, domainInfo, mlAnalysis, contentAnalysis] = await Promise.all([
       checkSafeBrowsing(url),
       checkGemini(url, urlInfo),
@@ -58,9 +67,9 @@ async function checkUrl(url) {
       analyzeUrlContent(url)
     ]);
 
-    // Weighted scoring system
+    // Calculate confidence-weighted scores
     const scores = {
-      safeBrowsing: safeBrowsingResult.safe ? 0 : 40,
+      safeBrowsing: safeBrowsingResult.safe ? 0 : 100,
       gemini: calculateGeminiScore(geminiResult),
       domain: calculateDomainScore(domainInfo),
       ml: mlAnalysis.score,
@@ -68,10 +77,17 @@ async function checkUrl(url) {
     };
 
     const totalScore = calculateWeightedScore(scores);
-    const isSafe = totalScore < 60 && safeBrowsingResult.safe && !contentAnalysis.hasPhishingIndicators;
+    
+    // Enhanced safety determination with multiple factors
+    const isSafe = totalScore < 60 && 
+                   safeBrowsingResult.safe && 
+                   !contentAnalysis.hasPhishingIndicators &&
+                   domainInfo.age !== '1 week' &&
+                   mlAnalysis.score < 70;
 
     return {
       safe: isSafe,
+      confidence: calculateConfidenceScore(scores, safeBrowsingResult, mlAnalysis),
       message: generateDetailedMessage(isSafe, scores),
       safeBrowsingDetails: safeBrowsingResult.details,
       geminiDetails: geminiResult.explanation,
@@ -298,44 +314,58 @@ function calculateDomainAge(createdDate) {
 
 function calculateDomainScore(domainInfo) {
   let score = 0;
+  const details = domainInfo.details || {};
   
-  // Enhanced domain age scoring with WHOIS data
+  // Domain age scoring with graduated scale
   const ageScores = {
-    '1 week': 50,
-    '1 month': 40,
-    '6 months': 20,
-    '1 year': 10,
-    '5 years+': 0,
-    'Unknown': 35
+    '1 week': { score: 50, confidence: 0.9 },
+    '1 month': { score: 40, confidence: 0.8 },
+    '6 months': { score: 20, confidence: 0.7 },
+    '1 year': { score: 10, confidence: 0.6 },
+    '5 years+': { score: 0, confidence: 0.9 },
+    'Unknown': { score: 35, confidence: 0.5 }
   };
-  score += ageScores[domainInfo.age] || 35;
 
-  // Additional WHOIS-based scoring
-  if (domainInfo.details) {
-    // Registrar check
-    if (!domainInfo.details.registrar) score += 15;
-    
-    // Name servers check
-    if (!domainInfo.details.nameServers?.length) score += 10;
-    
-    // Registration country check (high-risk countries list should be maintained)
-    const highRiskCountries = ['', 'Unknown', null];
-    if (highRiskCountries.includes(domainInfo.details.registrantCountry)) {
+  const ageScore = ageScores[domainInfo.age] || ageScores['Unknown'];
+  score += ageScore.score * ageScore.confidence;
+
+  // WHOIS data analysis
+  if (details) {
+    // Registrar reputation check
+    const knownRegistrars = ['GoDaddy', 'Namecheap', 'Google Domains', 'Amazon Registrar'];
+    if (!knownRegistrars.some(r => details.registrar?.toLowerCase().includes(r.toLowerCase()))) {
+      score += 15;
+    }
+
+    // Name servers analysis
+    if (!details.nameServers?.length) {
       score += 20;
+    } else if (details.nameServers.length < 2) {
+      score += 10;
     }
 
-    // Existing checks
-    if (!domainInfo.isSecure) score += 30;
-    if (domainInfo.details.suspiciousPatterns?.length) {
-      score += domainInfo.details.suspiciousPatterns.length * 15;
+    // Registration country risk assessment
+    const highRiskCountries = new Set([
+      'unknown', '', null, undefined,
+      // Add known high-risk countries based on cybersecurity reports
+    ]);
+    if (highRiskCountries.has(details.registrantCountry?.toLowerCase())) {
+      score += 25;
     }
-    if (domainInfo.details.hasNumbers) score += 10;
-    score += (domainInfo.details.specialChars || 0) * 5;
-    if (domainInfo.details.length > 30) score += 10;
-    if (domainInfo.details.subdomains > 3) score += 15;
+
+    // Pattern analysis with weighted scoring
+    const suspiciousPatterns = checkSuspiciousPatterns(details.domain);
+    score += suspiciousPatterns.reduce((total, { weight }) => total + weight, 0);
+
+    // Technical indicators
+    if (!domainInfo.isSecure) score += 30;
+    if (details.hasNumbers) score += 10;
+    score += (details.specialChars || 0) * 8;
+    if (details.length > 30) score += 15;
+    if (details.subdomains > 3) score += 20;
   }
 
-  return Math.min(score, 100);
+  return Math.min(Math.round(score), 100);
 }
 
 async function checkWithHuggingFace(url) {
@@ -366,19 +396,53 @@ async function analyzeUrlContent(url) {
     const text = await response.text();
     
     const indicators = {
-      hasPasswordField: /<input[^>]*type=["']password["'][^>]*>/i.test(text),
-      hasLoginForm: /<form[^>]*>[\s\S]*?(?:login|signin|password)[\s\S]*?<\/form>/i.test(text),
-      hasSuspiciousRedirects: /window\.location|document\.location|setTimeout/i.test(text),
-      hasObfuscatedCode: /(eval|unescape|escape|atob|btoa)\s*\(/i.test(text),
-      hasDataExfiltration: /XMLHttpRequest|fetch\s*\(|navigator\.sendBeacon/i.test(text)
+      // Form analysis
+      hasPasswordField: {
+        detected: /<input[^>]*type=["']password["'][^>]*>/i.test(text),
+        weight: 15
+      },
+      hasLoginForm: {
+        detected: /<form[^>]*>[\s\S]*?(?:login|signin|password)[\s\S]*?<\/form>/i.test(text),
+        weight: 20
+      },
+      
+      // Script analysis
+      hasSuspiciousRedirects: {
+        detected: /window\.location\s*=|document\.location\s*=|setTimeout\s*\([^)]*(?:location|redirect|url)/i.test(text),
+        weight: 25
+      },
+      hasObfuscatedCode: {
+        detected: /(eval|unescape|escape|atob|btoa)\s*\([^)]*\)|(function\s*\(\s*\)\s*{\s*[a-z$_]{1,2})/i.test(text),
+        weight: 30
+      },
+      
+      // Content analysis
+      hasDataExfiltration: {
+        detected: /XMLHttpRequest|fetch\s*\(|navigator\.sendBeacon|websocket/i.test(text),
+        weight: 20
+      },
+      hasSuspiciousHeaders: {
+        detected: /<h[1-6][^>]*>\s*(?:verify|confirm|secure|account|login|password|bank|wallet)/i.test(text),
+        weight: 15
+      },
+      
+      // Hidden elements
+      hasHiddenFields: {
+        detected: /<[^>]+(?:visibility:\s*hidden|display:\s*none|opacity:\s*0)[^>]*>.*?(?:password|email|account|card)/i.test(text),
+        weight: 25
+      }
     };
 
-    const score = Object.values(indicators).filter(Boolean).length * 20;
-    
+    const score = Object.values(indicators).reduce((total, { detected, weight }) => {
+      return total + (detected ? weight : 0);
+    }, 0);
+
     return {
       score: Math.min(score, 100),
       hasPhishingIndicators: score > 40,
-      indicators
+      indicators: Object.fromEntries(
+        Object.entries(indicators).map(([key, { detected }]) => [key, detected])
+      )
     };
   } catch (error) {
     console.error('Content analysis error:', error);
@@ -391,13 +455,33 @@ async function analyzeUrlContent(url) {
 }
 
 function calculateWeightedScore(scores) {
+  // Enhanced weighting system with confidence adjustments
   const weights = {
-    safeBrowsing: 0.3,
-    gemini: 0.2,
-    domain: 0.2,
-    ml: 0.2,
-    content: 0.1
+    safeBrowsing: 0.35,  // Increased weight for Google Safe Browsing
+    gemini: 0.15,        // Adjusted based on AI confidence
+    domain: 0.25,        // Increased domain importance
+    ml: 0.15,           // Machine learning model
+    content: 0.10        // Content analysis
   };
+
+  // Adjust weights based on confidence levels
+  if (scores.safeBrowsing > 80) {
+    weights.safeBrowsing += 0.1;
+    weights.gemini -= 0.05;
+    weights.ml -= 0.05;
+  }
+
+  if (scores.ml > 90) {
+    weights.ml += 0.1;
+    weights.gemini -= 0.05;
+    weights.content -= 0.05;
+  }
+
+  // Normalize weights
+  const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
+  Object.keys(weights).forEach(key => {
+    weights[key] = weights[key] / totalWeight;
+  });
 
   return Math.round(
     Object.entries(scores).reduce((total, [key, score]) => {
@@ -494,6 +578,66 @@ function generateDetailedFlags(safeBrowsing, gemini, domain, contentAnalysis, ml
   }
 
   return flags;
+}
+
+function checkSuspiciousPatterns(domain) {
+  const patterns = [
+    {
+      pattern: /^[0-9]+/,
+      type: 'Numeric prefix',
+      weight: 15
+    },
+    {
+      pattern: /[-_.]{2,}/,
+      type: 'Multiple separators',
+      weight: 10
+    },
+    {
+      pattern: /(login|verify|account|secure|banking|support|security|update|confirm)\.(tk|ml|ga|cf|gq|xyz)$/i,
+      type: 'Suspicious TLD combination',
+      weight: 25
+    },
+    {
+      pattern: /(?:paypal|apple|google|microsoft|amazon|facebook|instagram|twitter|bitcoin|crypto|wallet).*(?!\.com$)/i,
+      type: 'Brand impersonation',
+      weight: 30
+    },
+    {
+      pattern: /[0oIl]{3,}/i,
+      type: 'Homograph attack characters',
+      weight: 20
+    },
+    {
+      pattern: /(secure|login|account|verify|auth|signin|security|update|confirm).{30,}/i,
+      type: 'Long suspicious subdomain',
+      weight: 15
+    }
+  ];
+
+  return patterns
+    .filter(({ pattern }) => pattern.test(domain))
+    .map(({ type, weight }) => ({ type, weight }));
+}
+
+function calculateConfidenceScore(scores, safeBrowsingResult, mlAnalysis) {
+  // Weight different factors for confidence calculation
+  const weights = {
+    safeBrowsing: 0.4,
+    mlModel: 0.3,
+    overallScore: 0.3
+  };
+
+  const confidenceFactors = {
+    safeBrowsing: safeBrowsingResult.safe ? 100 : 0,
+    mlModel: 100 - Math.abs(50 - mlAnalysis.score), // Higher confidence when ML score is decisive
+    overallScore: scores.domain > 80 || scores.domain < 20 ? 100 : 60 // Higher confidence for clear cases
+  };
+
+  return Math.round(
+    Object.entries(weights).reduce((total, [key, weight]) => {
+      return total + (confidenceFactors[key] * weight);
+    }, 0)
+  );
 }
 
 // ... rest of your existing helper functions ...

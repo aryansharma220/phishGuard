@@ -21,7 +21,11 @@
     "*://*/*"
   ],
   "web_accessible_resources": [{
-    "resources": [".env"],
+    "resources": [
+      ".env",
+      "warningDialog.html",
+      "warningDialog.js"
+    ],
     "matches": ["<all_urls>"]
   }],
   "content_scripts": [{
