@@ -23,24 +23,35 @@ loadEnvVars();
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'checkUrl') {
-    checkUrl(request.url)
+    handleUrlCheck(request.url)
       .then(sendResponse)
       .catch(error => {
-        console.error('Error in checkUrl:', error);
+        console.error('URL check error:', error);
         sendResponse({
           safe: false,
-          message: error.message || 'Failed to analyze URL',
-          safeBrowsingDetails: 'Analysis failed',
-          geminiDetails: 'Analysis failed',
+          error: error.message,
           urlDetails: {
-            domainAge: 'Unknown',
-            ssl: 'Unknown',
             riskScore: 100,
-            threatLevel: 'Critical',
-            flags: ['Error during analysis']
+            threatLevel: 'Error',
+            flags: ['Analysis failed: ' + error.message]
           }
         });
       });
+    return true;
+  }
+
+  if (request.action === 'openWarningDialog') {
+    chrome.windows.create({
+      url: request.warningUrl,
+      type: 'popup',
+      width: 500,
+      height: 600,
+      left: screen.width/2 - 250,
+      top: screen.height/2 - 300
+    }).catch(error => {
+      console.error('Failed to open warning dialog:', error);
+      sendResponse({ error: error.message });
+    });
     return true;
   }
 });
@@ -53,6 +64,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   // ...existing message handlers...
 });
+
+async function handleUrlCheck(url) {
+  try {
+    const startTime = Date.now();
+    const result = await checkUrl(url);
+    const endTime = Date.now();
+
+    console.log(`URL check completed in ${endTime - startTime}ms:`, {
+      url,
+      result
+    });
+
+    return result;
+  } catch (error) {
+    console.error('URL check failed:', error);
+    throw error;
+  }
+}
 
 async function checkUrl(url) {
   try {

@@ -3,6 +3,7 @@ const observer = new MutationObserver((mutations) => {
   mutations.forEach((mutation) => {
     if (mutation.type === 'childList') {
       checkForSuspiciousContent();
+      findAndProcessLinks();
     }
   });
 });
@@ -30,14 +31,6 @@ function checkForSuspiciousContent() {
       analysis
     });
   }
-
-  // Add click handler for links
-  analysis.links.forEach(link => {
-    const linkElement = document.querySelector(`a[href="${link.href}"]`);
-    if (linkElement) {
-      wrapLinkElement(linkElement, link);
-    }
-  });
 }
 
 // Analyze form elements
@@ -83,46 +76,93 @@ function analyzePageContent() {
   };
 }
 
-// Add new helper functions...
+// Enhanced link detection
+function findAndProcessLinks() {
+  const processedLinks = new Set();
+  
+  // Process all links
+  document.querySelectorAll('a[href^="http"]:not(.phishguard-processed)').forEach(link => {
+    if (!processedLinks.has(link.href)) {
+      processedLinks.add(link.href);
+      wrapLinkElement(link);
+    }
+  });
 
-// Add click handler for links
-function wrapLinkElement(node, analysis) {
-  if (!node.classList.contains('phishguard-warning')) {
-    node.className += ' phishguard-warning';
-    
-    // Add click handler
-    node.addEventListener('click', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      
-      // Show warning dialog
-      const dialogWidth = 550;
-      const dialogHeight = 400;
-      const left = (window.screen.width - dialogWidth) / 2;
-      const top = (window.screen.height - dialogHeight) / 2;
+  // Process onclick attributes
+  document.querySelectorAll('[onclick]:not(.phishguard-processed)').forEach(element => {
+    const matches = element.getAttribute('onclick').match(/(?:location\.href|window\.location)\s*=\s*['"]([^'"]+)['"]/);
+    if (matches && matches[1].startsWith('http')) {
+      wrapLinkElement(element, matches[1]);
+    }
+  });
+}
 
-      const warningUrl = chrome.runtime.getURL('warningDialog.html') +
-        `?url=${encodeURIComponent(node.href)}&analysis=${encodeURIComponent(JSON.stringify(analysis))}`;
+// Improved link wrapping
+function wrapLinkElement(element, url = null) {
+  try {
+    if (element.classList.contains('phishguard-processed')) return;
+    element.classList.add('phishguard-processed');
 
-      window.open(
-        warningUrl,
-        'phishguard_warning',
-        `width=${dialogWidth},height=${dialogHeight},left=${left},top=${top}`
-      );
-    }, true);
+    const targetUrl = url || element.href;
+    chrome.runtime.sendMessage({
+      action: 'checkUrl',
+      url: targetUrl
+    }, response => {
+      if (chrome.runtime.lastError) {
+        console.error('Runtime error:', chrome.runtime.lastError);
+        return;
+      }
 
-    // Add tooltip
-    const tooltip = document.createElement('div');
-    tooltip.className = 'phishguard-tooltip';
-    tooltip.innerHTML = `
-      ⚠️ Warning: This link may be unsafe
-      <br>
+      if (response && !response.safe) {
+        markDangerousLink(element, response, targetUrl);
+      }
+    });
+  } catch (error) {
+    console.error('Error processing link:', error);
+  }
+}
+
+// Mark dangerous links
+function markDangerousLink(element, analysis, url) {
+  element.classList.add('phishguard-warning');
+  element.style.cursor = 'help';
+
+  // Create warning tooltip
+  const tooltip = document.createElement('div');
+  tooltip.className = 'phishguard-tooltip';
+  tooltip.innerHTML = `
+    <div class="tooltip-header">
+      ⚠️ Warning: Potentially unsafe link
+    </div>
+    <div class="tooltip-content">
       Risk Score: ${analysis.urlDetails.riskScore}%
       <br>
-      ${analysis.message}
-    `;
-    node.appendChild(tooltip);
-  }
+      ${analysis.urlDetails.threatLevel} Risk Level
+    </div>
+  `;
+  element.appendChild(tooltip);
+
+  // Add click handler
+  element.addEventListener('click', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    try {
+      const warningUrl = chrome.runtime.getURL('warningDialog.html') +
+        `?url=${encodeURIComponent(url)}&analysis=${encodeURIComponent(JSON.stringify(analysis))}`;
+      
+      await chrome.runtime.sendMessage({
+        action: 'openWarningDialog',
+        warningUrl,
+        originalUrl: url
+      });
+    } catch (error) {
+      console.error('Error showing warning:', error);
+      if (confirm('This link appears to be unsafe. Proceed anyway?')) {
+        window.location.href = url;
+      }
+    }
+  }, true);
 }
 
 // Send messages to background script
@@ -155,3 +195,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Initial check when script is loaded
 checkForSuspiciousContent();
+findAndProcessLinks();
