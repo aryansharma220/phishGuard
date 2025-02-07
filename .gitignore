@@ -1,0 +1,52 @@
+# Environment variables and API keys
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# Build directories
+dist/
+build/
+out/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Chrome Extension specific
+*.pem
+*.crx
+*.zip
+updates.xml
+
+# Cache directories
+.cache/
+.temp/
+
+# Testing
+coverage/
+__tests__/
+*.test.js
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# Personal development files
+TODO.md
+NOTES.md

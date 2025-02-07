@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Phishing URL Detector</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    body {
+      width: 380px;
+      padding: 16px;
+      font-family: 'Inter', sans-serif;
+      background: #f8f9fa;
+      margin: 0;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      margin-bottom: 16px;
+      padding: 12px;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+
+    .header img {
+      width: 32px;
+      height: 32px;
+      margin-right: 12px;
+    }
+
+    .header h3 {
+      margin: 0;
+      color: #1a1a1a;
+      font-size: 18px;
+    }
+
+    #currentUrl {
+      padding: 8px 12px;
+      background: #e9ecef;
+      border-radius: 6px;
+      font-size: 13px;
+      word-break: break-all;
+      margin-bottom: 16px;
+      color: #495057;
+      border: 1px solid #dee2e6;
+    }
+
+    #status {
+      padding: 8px;
+      text-align: center;
+      color: #666;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .loader {
+      width: 20px;
+      height: 20px;
+      border: 3px solid #f3f3f3;
+      border-top: 3px solid #3498db;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-right: 8px;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .result {
+      margin: 16px 0;
+      padding: 12px;
+      border-radius: 8px;
+      font-weight: 500;
+      text-align: center;
+      transition: all 0.3s ease;
+    }
+
+    .safe {
+      background-color: #d1e7dd;
+      color: #0a3622;
+      border: 1px solid #a3cfbb;
+    }
+
+    .unsafe {
+      background-color: #f8d7da;
+      color: #842029;
+      border: 1px solid #f5c2c7;
+    }
+
+    .details {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+      overflow: hidden;
+    }
+
+    .analysis-item {
+      padding: 16px;
+      border-bottom: 1px solid #eee;
+    }
+
+    .analysis-item:last-child {
+      border-bottom: none;
+    }
+
+    .analysis-item strong {
+      display: block;
+      margin-bottom: 8px;
+      color: #1a1a1a;
+    }
+
+    .analysis-content {
+      font-size: 14px;
+      color: #666;
+      line-height: 1.4;
+    }
+
+    .details-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .details-table td {
+      padding: 6px 4px;
+      font-size: 13px;
+    }
+
+    .details-table td:first-child {
+      color: #666;
+      width: 40%;
+    }
+
+    .score {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .threat-level {
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .high-risk { background: #ffd7d7; color: #cc0000; }
+    .medium-risk { background: #fff3cd; color: #856404; }
+    .low-risk { background: #d4edda; color: #155724; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="icon.png" alt="Logo">
+    <h3>Phishing URL Detector</h3>
+  </div>
+
+  <div id="currentUrl"></div>
+  
+  <div id="status">
+    <span class="loader"></span>
+    Analyzing current URL...
+  </div>
+  
+  <div id="result" class="result"></div>
+  
+  <div id="details" class="details">
+    <div id="safeBrowsing" class="analysis-item"></div>
+    <div id="geminiAnalysis" class="analysis-item"></div>
+    <div id="urlAnalysis" class="analysis-item"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
